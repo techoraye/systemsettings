@@ -1,5 +1,11 @@
 [General]
-enabled=true
+# Éteint à l'installation, et volontairement.
+# Livrer enabled=true fait démarrer le panneau en contradiction avec
+# lui-même : la configuration se dit active alors qu'aucune unité
+# systemd ne l'est encore, personne n'ayant touché le commutateur.
+# L'utilisateur allume quand ses paires et son montage sont prêts ;
+# c'est ce basculement qui déclenche systemctl enable --now.
+enabled=false
 debounce=5
 periodicMinutes=15
 conflictPolicy=newer
