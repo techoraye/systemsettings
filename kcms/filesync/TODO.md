@@ -18,6 +18,19 @@ une erreur affichée. L'import et l'export de preset non plus.
 | `currentFile` retiré de FileDialog | en-tête Qt 6.11 | existe toujours (déprécié) |
 | Erreur QML au chargement | `kcmshell6 kcm_filesync` | aucune sortie |
 
+**Refait sur `latitude1` le 12/09/2026** — le tableau ci-dessus a été établi
+depuis `cyberkalumamy`, rien ne garantissait le même état ici :
+
+| Hypothèse | Vérifié sur latitude1 | Résultat |
+|---|---|---|
+| `konsole` absent | `command -v` | présent, 26.08.1 |
+| `konsole --hold -e <filesync> status` | lancé pour de vrai | la fenêtre s'ouvre |
+| `filesync status` en échec | lancé | rend les 3 paires, « NAS mounted : yes » |
+| `QProcess::startDetached` bridé dans un contexte Qt | programme Qt minimal reproduisant `term()` | konsole démarre |
+
+Toutes les pièces fonctionnent isolément. L'échec est donc propre au contexte
+d'exécution du KCM, et il n'est pas reproductible sans cliquer.
+
 **Ce qui manque pour aller plus loin : le texte exact de l'erreur.** Le QML
 l'affiche dans la bannière `root.notice`. Sans lui on cherche à l'aveugle.
 
