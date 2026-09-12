@@ -274,15 +274,51 @@ KCM.SimpleKCM {
     Kirigami.OverlaySheet {
         id: addSheet
         title: i18n("Add a folder pair")
-        Kirigami.FormLayout {
-            QQC2.TextField { id: pName;   Kirigami.FormData.label: i18n("Name:") }
-            QQC2.TextField { id: pLocal;  Kirigami.FormData.label: i18n("Local folder:"); Layout.preferredWidth: Kirigami.Units.gridUnit * 20 }
-            QQC2.TextField { id: pRemote; Kirigami.FormData.label: i18n("Other folder:"); Layout.preferredWidth: Kirigami.Units.gridUnit * 20 }
+
+        // A FormLayout handed straight to an OverlaySheet contributes almost no
+        // implicit width of its own, so the sheet collapsed to a bare vertical
+        // strip showing only its close button. Wrap it and state a width.
+        contentItem: ColumnLayout {
+            spacing: Kirigami.Units.largeSpacing
+            implicitWidth: Kirigami.Units.gridUnit * 28
+
+            Kirigami.FormLayout {
+                Layout.fillWidth: true
+                QQC2.TextField {
+                    id: pName
+                    Kirigami.FormData.label: i18n("Name:")
+                    Layout.fillWidth: true
+                    placeholderText: i18n("Documents")
+                }
+                QQC2.TextField {
+                    id: pLocal
+                    Kirigami.FormData.label: i18n("Local folder:")
+                    Layout.fillWidth: true
+                    placeholderText: "/home/…/Documents"
+                }
+                QQC2.TextField {
+                    id: pRemote
+                    Kirigami.FormData.label: i18n("Other folder:")
+                    Layout.fillWidth: true
+                    placeholderText: "/mnt/nas/…/Documents"
+                }
+            }
+        }
+
+        // The confirm button belongs in the footer, not inside the form: in the
+        // form it inherited the label column and sat off to one side.
+        footer: RowLayout {
+            Item { Layout.fillWidth: true }
             QQC2.Button {
                 text: i18n("Add")
                 icon.name: "list-add"
+                // Adding a nameless pair writes a section called "Pair_" that
+                // nothing can address afterwards.
+                enabled: pName.text.trim().length > 0
+                      && pLocal.text.trim().length > 0
+                      && pRemote.text.trim().length > 0
                 onClicked: {
-                    kcm.addPair(pName.text, pLocal.text, pRemote.text)
+                    kcm.addPair(pName.text.trim(), pLocal.text.trim(), pRemote.text.trim())
                     pName.text = ""; pLocal.text = ""; pRemote.text = ""
                     addSheet.close()
                 }

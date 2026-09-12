@@ -6,9 +6,11 @@
 #include <KPluginFactory>
 #include <KLocalizedString>
 #include <KQuickConfigModule>
+#include <QDateTime>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QLocale>
 #include <QProcess>
 #include <QRegularExpression>
 #include <QSettings>
@@ -87,18 +89,39 @@ public:
     }
     QString lastError() const { return m_lastError; }
 
+    // The log interleaves two things: the engine's own "[timestamp] message"
+    // lines and unison's raw output. Taking the last non-empty line took
+    // whichever came last, which was usually a column of file names from
+    // unison - unreadable, and wide enough to push the layout around. Only the
+    // engine's own lines say something about a run.
     QString lastRun() const
     {
         QFile f(QDir::homePath() + QStringLiteral("/.cache/filesync/filesync.log"));
         if (!f.open(QIODevice::ReadOnly | QIODevice::Text))
-            return QStringLiteral("never");
-        QString last;
+            return i18n("Never run");
+
+        static const QRegularExpression stamped(QStringLiteral("^\\[([^\\]]+)\\]\\s*(.+)$"));
+        QString when, what;
         while (!f.atEnd()) {
             const QString l = QString::fromUtf8(f.readLine()).trimmed();
-            if (!l.isEmpty())
-                last = l;
+            const auto m = stamped.match(l);
+            if (m.hasMatch()) {
+                when = m.captured(1);
+                what = m.captured(2);
+            }
         }
-        return last.isEmpty() ? QStringLiteral("never") : last;
+        if (what.isEmpty())
+            return i18n("Never run");
+
+        const QDateTime t = QDateTime::fromString(when, Qt::ISODate);
+        const QString moment = t.isValid()
+            ? QLocale().toString(t, QLocale::ShortFormat)
+            : when;
+        // A single line in a cramped label: keep it short and never let a stray
+        // path stretch the row.
+        if (what.length() > 80)
+            what = what.left(77) + QStringLiteral("...");
+        return i18n("Last activity: %1 - %2", moment, what);
     }
 
     QVariantList pairs() const

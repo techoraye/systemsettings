@@ -12,6 +12,12 @@
 set -u
 CONF="$HOME/.config/filesync/filesync.conf"
 LOGDIR="$HOME/.cache/filesync"; mkdir -p "$LOGDIR"
+# unison range ses profils ET ses archives ici. Il crée le répertoire lui-même
+# au premier lancement, mais write_profile y écrit AVANT qu'unison ne tourne :
+# sans ce mkdir, la toute première paire jamais synchronisée échouait sur
+# « Profile does not exist », unison créait le répertoire en sortant en erreur,
+# et les paires suivantes marchaient. Le défaut ne se voyait donc qu'une fois.
+UNISONDIR="$HOME/.unison"; mkdir -p "$UNISONDIR"
 LOG="$LOGDIR/filesync.log"
 say() { printf '[%s] %s\n' "$(date -Is)" "$*" >>"$LOG"; }
 
@@ -39,7 +45,7 @@ write_profile() {   # $1 = section, $2 = sync|dry -> echoes profile name
     pol=$(ini General conflictPolicy); pol=${pol:-newer}
     dir=$(ini "$sec" direction); dir=${dir:-twoway}
     [ "$mode" = dry ] && name="${name}-preview"
-    prf="$HOME/.unison/${name,,}.prf"
+    prf="$UNISONDIR/${name,,}.prf"
     {
         echo "root = $l"
         echo "root = $r"
@@ -52,7 +58,18 @@ write_profile() {   # $1 = section, $2 = sync|dry -> echoes profile name
         # so comparing permissions would flag every file as different.
         echo "perms = 0"
         echo "dontchmod = true"
-        echo "maxthreads = 4"
+        # Le coût dominant est la LATENCE par fichier, pas le calcul : mesuré sur
+        # ce montage, 200 stat() prennent 6 ms en local contre 7163 ms en CIFS,
+        # soit ~36 ms par fichier. Un travail dominé par l'attente réseau se
+        # parallélise bien ; 4 fils laissaient le lien inoccupé l'essentiel du
+        # temps. Au-delà d'une vingtaine, les NAS grand public commencent à
+        # refuser des requêtes, d'où cette valeur plutôt que davantage.
+        echo "maxthreads = 20"
+        # Comparer par (taille, date) plutôt que relire le contenu. C'est le
+        # défaut d'unison sous Unix, mais l'écrire noir sur blanc évite qu'une
+        # version future le change sous nos pieds : relire 30 000 fichiers à
+        # travers CIFS se compterait en heures.
+        echo "fastcheck = true"
         echo "log = true"
         echo "logfile = $LOGDIR/${name,,}.log"
         case "$dir" in
@@ -71,6 +88,12 @@ write_profile() {   # $1 = section, $2 = sync|dry -> echoes profile name
             [ -n "${pat// /}" ] && echo "ignore = Name $pat"
         done
     } > "$prf"
+    # Renvoyer le nom d'un profil qui n'existe pas envoie unison droit dans
+    # « Profile does not exist », une erreur qui ne dit rien de la vraie cause.
+    if [ ! -s "$prf" ]; then
+        say "$name: impossible d'écrire le profil $prf"
+        return 1
+    fi
     # unison wants the profile NAME: it looks in ~/.unison and appends .prf
     printf '%s' "${name,,}"
 }
@@ -81,7 +104,9 @@ run_pair() {  # run_pair <section> <sync|dry>
     if [ "$mode" = sync ] && [ "$(ini "$sec" enabled)" != "true" ]; then
         say "$name: disabled, skipped"; return 0
     fi
-    prf=$(write_profile "$sec" "$mode")
+    if ! prf=$(write_profile "$sec" "$mode"); then
+        say "$name: profil non généré, paire ignorée"; return 1
+    fi
     if [ "$mode" = dry ]; then
         echo "=== $name   $(ini "$sec" local)  <->  $(ini "$sec" remote)   [$(ini "$sec" direction)]"
         # -batch=false on the command line as well as in the profile, and "q"
