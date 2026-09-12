@@ -1,0 +1,21 @@
+[Unit]
+Description=Watch local folders and sync to the NAS when they go quiet
+After=default.target
+
+[Service]
+Type=simple
+# Background work: it must never be the reason the fans spin up. Nice 19 and
+# idle I/O keep it off the CPU governor's radar; the quota stops a 105k-file
+# scan over CIFS from pinning a core for an hour.
+Nice=19
+CPUSchedulingPolicy=batch
+IOSchedulingClass=idle
+IOSchedulingPriority=7
+CPUWeight=20
+CPUQuota=60%
+ExecStart=%h/.local/bin/filesync-watch
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,10 @@
+{
+    "KPlugin": {
+        "Description": "Two-way folder sync with a network share or a local disk",
+        "Icon": "folder-sync",
+        "Name": "File Sync",
+        "Category": "System Administration"
+    },
+    "X-KDE-KCM-Category": "system-administration",
+    "X-KDE-Keywords": "sync,synchronise,synchronize,nas,backup,unison,mirror,folder"
+}

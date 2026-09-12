@@ -1,0 +1,49 @@
+#!/bin/bash
+# Watch the local side of every enabled pair and sync once things go quiet.
+#
+# Debounce, not per-event: saving a file in most editors produces a burst of
+# events, and a large copy produces thousands. Syncing on each one would thrash
+# the NAS, so a sync runs only after N seconds with nothing new.
+#
+# inotify sees LOCAL changes only. CIFS reports no events for changes made on
+# the NAS by another machine, which is why a periodic sweep runs alongside this.
+set -u
+CONF="$HOME/.config/filesync/filesync.conf"
+LOG="$HOME/.cache/filesync/filesync.log"
+mkdir -p "$(dirname "$LOG")"
+say() { printf '[%s] watch: %s\n' "$(date -Is)" "$*" >>"$LOG"; }
+
+ini() {
+    awk -v s="[$1]" -v k="$2" '
+        /^\[/ { inx = ($0 == s) }
+        inx && $0 ~ "^"k"=" { sub("^"k"=",""); print; exit }
+    ' "$CONF"
+}
+
+DEBOUNCE=$(ini General debounce); DEBOUNCE=${DEBOUNCE:-5}
+DIRS=()
+for p in $(grep -o '^\[Pair_[A-Za-z0-9_]*\]' "$CONF" | tr -d '[]'); do
+    [ "$(ini "$p" enabled)" = "true" ] || continue
+    d=$(ini "$p" local)
+    [ -d "$d" ] && DIRS+=("$d")
+done
+[ "${#DIRS[@]}" -gt 0 ] || { say "no enabled pairs with an existing local directory"; exit 0; }
+say "watching ${DIRS[*]} (debounce ${DEBOUNCE}s)"
+
+pending=0
+while :; do
+    if read -r -t "$DEBOUNCE" _line; then
+        pending=1                      # something changed; keep waiting for quiet
+    elif [ "$pending" -eq 1 ]; then
+        pending=0
+        say "quiet for ${DEBOUNCE}s - syncing"
+        "$HOME/.local/bin/filesync" sync
+        # Drain anything unison itself just caused, so writing to the local side
+        # does not immediately trigger another round.
+        while read -r -t 0.2 _drain; do :; done
+        say "sync finished"
+    fi
+done < <(inotifywait -m -r -q \
+           -e close_write -e create -e delete -e move \
+           --exclude '(\.part$|\.swp$|~$|/\.git/|4913$)' \
+           "${DIRS[@]}" 2>/dev/null)

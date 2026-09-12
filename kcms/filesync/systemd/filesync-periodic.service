@@ -1,0 +1,18 @@
+[Unit]
+Description=Full two-way sweep (catches changes made on the NAS itself)
+
+[Service]
+Type=oneshot
+# The first run transfers ~249 GB and takes hours; the default oneshot
+# timeout would kill it partway.
+TimeoutStartSec=infinity
+# Background work: it must never be the reason the fans spin up. Nice 19 and
+# idle I/O keep it off the CPU governor's radar; the quota stops a 105k-file
+# scan over CIFS from pinning a core for an hour.
+Nice=19
+CPUSchedulingPolicy=batch
+IOSchedulingClass=idle
+IOSchedulingPriority=7
+CPUWeight=20
+CPUQuota=60%
+ExecStart=%h/.local/bin/filesync sync

@@ -1,0 +1,156 @@
+#!/bin/bash
+# Bidirectional folder sync, driven by ~/.config/filesync/filesync.conf.
+#
+# Engine is unison, not rsync: rsync is one-directional. Run it both ways and it
+# cannot tell "deleted here" from "created there", so deletions resurrect and
+# nothing detects a genuine conflict. unison keeps a per-pair archive of the
+# last agreed state, which is what makes two-way sync safe.
+#
+#   filesync sync [--force] [Pair_Name]   run it
+#   filesync dry  [Pair_Name]             show what would happen, change nothing
+#   filesync status                       current configuration and last result
+set -u
+CONF="$HOME/.config/filesync/filesync.conf"
+LOGDIR="$HOME/.cache/filesync"; mkdir -p "$LOGDIR"
+LOG="$LOGDIR/filesync.log"
+say() { printf '[%s] %s\n' "$(date -Is)" "$*" >>"$LOG"; }
+
+# QSettings writes [General] keys, and awk reads them the same way.
+ini() {
+    awk -v s="[$1]" -v k="$2" '
+        /^\[/ { inx = ($0 == s) }
+        inx && index($0, k"=") == 1 { sub("^"k"=",""); gsub(/^"|"$/,""); print; exit }
+    ' "$CONF"
+}
+pairs() { grep -o '^\[Pair_[A-Za-z0-9_]*\]' "$CONF" | tr -d '[]'; }
+
+nas_ready() {
+    # The share is behind an automount that releases it after 10 idle minutes,
+    # so "not mounted right now" does NOT mean unavailable. Touch the path to
+    # let the automount do its job, THEN check. Without this every sync was
+    # skipped once the share had been idle.
+    ls /mnt/nas >/dev/null 2>&1
+    findmnt -no FSTYPE /mnt/nas 2>/dev/null | grep -q cifs
+}
+
+write_profile() {   # $1 = section, $2 = sync|dry -> echoes profile name
+    local sec="$1" mode="${2:-sync}" name="${1#Pair_}" l r pol dir prf
+    l=$(ini "$sec" local); r=$(ini "$sec" remote)
+    pol=$(ini General conflictPolicy); pol=${pol:-newer}
+    dir=$(ini "$sec" direction); dir=${dir:-twoway}
+    [ "$mode" = dry ] && name="${name}-preview"
+    prf="$HOME/.unison/${name,,}.prf"
+    {
+        echo "root = $l"
+        echo "root = $r"
+        # A preview profile must NOT say batch=true. With it, unison acts the
+        # moment it is run instead of asking - which is how a "dry run" once
+        # copied 282 files for real.
+        [ "$mode" = dry ] && echo "batch = false" || echo "batch = true"
+        echo "times = true"
+        # CIFS maps ownership with uid=/gid= and cannot round-trip Unix modes,
+        # so comparing permissions would flag every file as different.
+        echo "perms = 0"
+        echo "dontchmod = true"
+        echo "maxthreads = 4"
+        echo "log = true"
+        echo "logfile = $LOGDIR/${name,,}.log"
+        case "$dir" in
+            push) echo "force = $l" ;;   # local wins everywhere: NAS mirrors local
+            pull) echo "force = $r" ;;   # NAS wins everywhere: local mirrors NAS
+            *)    [ "$pol" = "newer" ] && echo "prefer = newer" ;;
+        esac
+        echo "ignore = Name .Trash-*"
+        echo "ignore = Name .stfolder"
+        echo "ignore = Name .DS_Store"
+        echo "ignore = Name *.part"
+        echo "ignore = Name .fuse_hidden*"
+        # user patterns, one per line in the config (\n-escaped by QSettings)
+        ini General ignorePatterns | tr '\n' '\034' | sed 's/\\\\n/\034/g' | tr '\034' '\n' |
+        while IFS= read -r pat; do
+            [ -n "${pat// /}" ] && echo "ignore = Name $pat"
+        done
+    } > "$prf"
+    # unison wants the profile NAME: it looks in ~/.unison and appends .prf
+    printf '%s' "${name,,}"
+}
+
+run_pair() {  # run_pair <section> <sync|dry>
+    local sec="$1" mode="$2" prf name
+    name="${sec#Pair_}"
+    if [ "$mode" = sync ] && [ "$(ini "$sec" enabled)" != "true" ]; then
+        say "$name: disabled, skipped"; return 0
+    fi
+    prf=$(write_profile "$sec" "$mode")
+    if [ "$mode" = dry ]; then
+        echo "=== $name   $(ini "$sec" local)  <->  $(ini "$sec" remote)   [$(ini "$sec" direction)]"
+        # -batch=false on the command line as well as in the profile, and "q"
+        # on stdin so the reconciliation list is printed and then abandoned.
+        # The preview quits before writing an archive, so unison shows its
+        # first-run banner every time. Strip it; the reconciliation list is
+        # the part worth reading.
+        printf '\nq\n' | timeout 600 unison "$prf" -batch=false -auto=false -ui text -dumbtty -terse -confirmbigdel=false 2>&1 \
+          | grep -vE 'archive files were found|^This can happen|^because this is|^or because you|^archive format|^Update detection|^large\.|^Unison will assume|^was completely empty|^will be reported|^replica will be|^If the two replicas|^If you see this|^is getting its|^between synchron|^environment variable|^Press return|^\s*$' \
+          | head -80
+        echo
+    else
+        say "$name: syncing ($(ini "$sec" direction))"
+        unison "$prf" -ui text -dumbtty </dev/null >>"$LOG" 2>&1
+        local rc=$?; say "$name: unison exit $rc"; return $rc
+    fi
+}
+
+# Only one sync at a time. The initial pull runs for hours and writes into the
+# very directories the 5s watcher is watching, so without this the watcher and
+# the 15-minute timer would both start further unison runs on top of it.
+LOCK="$LOGDIR/.lock"
+exec 9>"$LOCK"
+
+CMD="${1:-sync}"; shift || true
+FORCE=0
+[ "${1:-}" = "--force" ] && { FORCE=1; shift; }
+ONLY="${1:-}"
+
+case "$CMD" in
+  sync)
+      if [ "$FORCE" != 1 ] && [ "$(ini General enabled)" != "true" ]; then
+          say "master switch off, nothing done"; exit 0
+      fi
+      nas_ready || { say "NAS not mounted, skipping this run"; exit 0; }
+      if ! flock -n 9; then
+          say "another sync is already running, skipping"
+          exit 0
+      fi
+      rc=0
+      for p in $(pairs); do
+          [ -n "$ONLY" ] && [ "$p" != "$ONLY" ] && continue
+          run_pair "$p" sync || rc=1
+      done
+      if [ "$(ini General notify)" != "false" ] && command -v notify-send >/dev/null; then
+          [ "$rc" = 0 ] && notify-send -i folder-sync "File sync" "Finished." \
+                        || notify-send -u critical -i folder-sync "File sync" "Errors - see the log."
+      fi
+      exit $rc
+      ;;
+  dry)
+      nas_ready || { echo "The NAS is not mounted."; exit 1; }
+      for p in $(pairs); do
+          [ -n "$ONLY" ] && [ "$p" != "$ONLY" ] && continue
+          run_pair "$p" dry
+      done
+      ;;
+  status)
+      printf 'master switch : %s\n' "$(ini General enabled)"
+      printf 'debounce      : %ss\n' "$(ini General debounce)"
+      printf 'full sweep    : every %s min\n' "$(ini General periodicMinutes)"
+      printf 'conflicts     : %s\n' "$(ini General conflictPolicy)"
+      printf 'NAS mounted   : %s\n' "$(nas_ready && echo yes || echo NO)"
+      echo
+      for p in $(pairs); do
+          printf '%-12s %-34s <-> %-34s %-7s %s\n' "${p#Pair_}" "$(ini "$p" local)" "$(ini "$p" remote)" \
+                 "$(ini "$p" direction)" "$([ "$(ini "$p" enabled)" = true ] && echo on || echo off)"
+      done
+      echo; echo "last log lines:"; tail -8 "$LOG" 2>/dev/null | sed 's/^/  /'
+      ;;
+  *) echo "usage: filesync [sync [--force] [Pair_X] | dry [Pair_X] | status]"; exit 2 ;;
+esac
