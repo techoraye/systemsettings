@@ -28,3 +28,6 @@ cmake-build-debug*
 /compile_commands.json
 .clangd
 .cache
+
+# répertoire de compilation local du KCM File Sync
+kcms/filesync/kcm/build/

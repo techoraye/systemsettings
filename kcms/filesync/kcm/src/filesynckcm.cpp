@@ -4,6 +4,7 @@
 // script the systemd units call. One engine means the panel and the automatic
 // runs can never disagree about what a sync does.
 #include <KPluginFactory>
+#include <KLocalizedString>
 #include <KQuickConfigModule>
 #include <QDir>
 #include <QFile>
@@ -29,6 +30,8 @@ class FileSyncKCM : public KQuickConfigModule
     Q_PROPERTY(QVariantList pairs READ pairs NOTIFY settingsChanged)
     Q_PROPERTY(bool nasMounted READ nasMounted NOTIFY settingsChanged)
     Q_PROPERTY(bool running READ running NOTIFY settingsChanged)
+    Q_PROPERTY(bool unitsActive READ unitsActive NOTIFY settingsChanged)
+    Q_PROPERTY(QString lastError READ lastError NOTIFY settingsChanged)
     Q_PROPERTY(QString lastRun READ lastRun NOTIFY settingsChanged)
 
 public:
@@ -70,6 +73,19 @@ public:
         return sh(QStringLiteral("systemctl"), {QStringLiteral("is-active"), QStringLiteral("mnt-nas.automount")}).trimmed() == QLatin1String("active");
     }
     bool running() const { return !sh(QStringLiteral("pgrep"), {QStringLiteral("-x"), QStringLiteral("unison")}).trimmed().isEmpty(); }
+
+    // The status line used to describe the switch position instead of reality:
+    // it read syncEnabled() straight from the config file. When systemctl
+    // failed the config still said true, so the panel claimed "Watching for
+    // changes" while nothing watched and the user had no way to tell. Ask
+    // systemd what is actually running.
+    bool unitsActive() const
+    {
+        return sh(QStringLiteral("systemctl"),
+                  {QStringLiteral("--user"), QStringLiteral("is-active"),
+                   QStringLiteral("filesync-watch.service")}).trimmed() == QLatin1String("active");
+    }
+    QString lastError() const { return m_lastError; }
 
     QString lastRun() const
     {
@@ -140,13 +156,25 @@ public:
     Q_INVOKABLE void apply()
     {
         const bool on = syncEnabled();
-        detach(QStringLiteral("systemctl"), {QStringLiteral("--user"), QStringLiteral("daemon-reload")});
+        m_lastError.clear();
+
+        // Run these in order and wait. They used to be fired detached, which
+        // threw away both the exit status and stderr: a systemctl that refused
+        // to enable anything looked exactly like one that succeeded, and the
+        // switch stayed on over units that were never started.
+        if (!runOk({QStringLiteral("--user"), QStringLiteral("daemon-reload")}))
+            return finish();
+
         const QString verb = on ? QStringLiteral("enable") : QStringLiteral("disable");
-        detach(QStringLiteral("systemctl"), {QStringLiteral("--user"), verb, QStringLiteral("--now"), QStringLiteral("filesync-watch.service")});
-        detach(QStringLiteral("systemctl"), {QStringLiteral("--user"), verb, QStringLiteral("--now"), QStringLiteral("filesync-periodic.timer")});
+        for (const QString &unit : {QStringLiteral("filesync-watch.service"),
+                                    QStringLiteral("filesync-periodic.timer")}) {
+            if (!runOk({QStringLiteral("--user"), verb, QStringLiteral("--now"), unit}))
+                return finish();
+        }
         if (on)
-            detach(QStringLiteral("systemctl"), {QStringLiteral("--user"), QStringLiteral("restart"), QStringLiteral("filesync-watch.service")});
-        Q_EMIT settingsChanged();
+            runOk({QStringLiteral("--user"), QStringLiteral("restart"), QStringLiteral("filesync-watch.service")});
+
+        finish();
     }
 
     Q_INVOKABLE void refresh() { Q_EMIT settingsChanged(); }
@@ -223,6 +251,29 @@ private:
         return QString::fromUtf8(p.readAllStandardOutput());
     }
     static void detach(const QString &prog, const QStringList &args) { QProcess::startDetached(prog, args); }
+
+    // systemctl, synchrone. Rend false et retient stderr en cas d'échec, pour
+    // que le panneau puisse le dire au lieu de laisser croire que tout va bien.
+    bool runOk(const QStringList &args)
+    {
+        QProcess p;
+        p.start(QStringLiteral("systemctl"), args);
+        if (!p.waitForFinished(15000)) {
+            m_lastError = i18n("systemctl did not answer in time (%1)", args.join(QLatin1Char(' ')));
+            return false;
+        }
+        if (p.exitStatus() != QProcess::NormalExit || p.exitCode() != 0) {
+            QString err = QString::fromUtf8(p.readAllStandardError()).trimmed();
+            if (err.isEmpty())
+                err = i18n("exit code %1", p.exitCode());
+            m_lastError = i18n("systemctl %1 failed: %2", args.join(QLatin1Char(' ')), err);
+            return false;
+        }
+        return true;
+    }
+    void finish() { Q_EMIT settingsChanged(); }
+
+    QString m_lastError;
     // Long text output belongs in a terminal, not a cramped label.
     static void term(const QStringList &cmd)
     {

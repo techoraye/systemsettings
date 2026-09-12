@@ -35,12 +35,22 @@ KCM.SimpleKCM {
         spacing: Kirigami.Units.largeSpacing
 
         // ---------------- status ----------------
+        Kirigami.InlineMessage {
+            Layout.fillWidth: true
+            type: Kirigami.MessageType.Error
+            visible: kcm.lastError.length > 0
+            text: kcm.lastError
+        }
+
         Kirigami.AbstractCard {
             Layout.fillWidth: true
             contentItem: RowLayout {
                 spacing: Kirigami.Units.largeSpacing
                 Kirigami.Icon {
-                    source: kcm.running ? "view-refresh" : (kcm.syncEnabled ? "folder-sync" : "media-playback-pause")
+                    source: kcm.running ? "view-refresh"
+                          : kcm.unitsActive ? "folder-sync"
+                          : kcm.syncEnabled ? "dialog-warning"
+                          : "media-playback-pause"
                     implicitWidth: Kirigami.Units.iconSizes.large
                     implicitHeight: Kirigami.Units.iconSizes.large
                 }
@@ -48,8 +58,13 @@ KCM.SimpleKCM {
                     spacing: 0
                     Layout.fillWidth: true
                     QQC2.Label {
+                        // unitsActive, not syncEnabled: the first asks systemd what
+                        // is running, the second only repeats what the config file
+                        // says. They disagree whenever enabling failed, and it is
+                        // precisely then that the user needs to be told.
                         text: kcm.running ? i18n("Syncing now")
-                             : kcm.syncEnabled ? i18n("Watching for changes")
+                             : kcm.unitsActive ? i18n("Watching for changes")
+                             : kcm.syncEnabled ? i18n("Switched on, but nothing is running")
                              : i18n("Automatic sync is off")
                         font.bold: true
                     }
