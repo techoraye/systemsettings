@@ -18,6 +18,13 @@ LOGDIR="$HOME/.cache/filesync"; mkdir -p "$LOGDIR"
 # « Profile does not exist », unison créait le répertoire en sortant en erreur,
 # et les paires suivantes marchaient. Le défaut ne se voyait donc qu'une fois.
 UNISONDIR="$HOME/.unison"; mkdir -p "$UNISONDIR"
+# unison indexe ses archives par nom d'hôte. Renommer la machine — ou recevoir
+# un nom différent par DHCP — rend toutes les archives illisibles : unison
+# reconsidère alors chaque fichier comme nouveau, propose de tout recopier et
+# ne détecte plus aucun conflit. C'est précisément ce que son propre
+# avertissement « UNISONLOCALHOSTNAME » décrit. On épingle donc une valeur
+# stable, indépendante du nom courant de la machine.
+export UNISONLOCALHOSTNAME="${UNISONLOCALHOSTNAME:-latitude1}"
 LOG="$LOGDIR/filesync.log"
 say() { printf '[%s] %s\n' "$(date -Is)" "$*" >>"$LOG"; }
 

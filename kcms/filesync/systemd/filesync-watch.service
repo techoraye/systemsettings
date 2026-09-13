@@ -3,6 +3,7 @@ Description=Watch local folders and sync to the NAS when they go quiet
 After=default.target
 
 [Service]
+Environment=UNISONLOCALHOSTNAME=latitude1
 Type=simple
 # Background work: it must never be the reason the fans spin up. Nice 19 and
 # idle I/O keep it off the CPU governor's radar; the quota stops a 105k-file

@@ -275,53 +275,71 @@ KCM.SimpleKCM {
         id: addSheet
         title: i18n("Add a folder pair")
 
-        // A FormLayout handed straight to an OverlaySheet contributes almost no
-        // implicit width of its own, so the sheet collapsed to a bare vertical
-        // strip showing only its close button. Wrap it and state a width.
-        contentItem: ColumnLayout {
+        // Contenu en ENFANT PAR DÉFAUT, surtout pas via contentItem : imposer
+        // contentItem remplace la structure interne de la feuille, et sa barre
+        // de titre comme son pied disparaissent avec — d'où une feuille sans
+        // bouton Ajouter ni fermeture.
+        ColumnLayout {
             spacing: Kirigami.Units.largeSpacing
-            implicitWidth: Kirigami.Units.gridUnit * 28
+            // Un FormLayout seul n'apporte quasiment aucune largeur implicite :
+            // sans cette valeur la feuille se replie en bande verticale.
+            implicitWidth: Kirigami.Units.gridUnit * 26
 
             Kirigami.FormLayout {
                 Layout.fillWidth: true
+
                 QQC2.TextField {
                     id: pName
                     Kirigami.FormData.label: i18n("Name:")
-                    Layout.fillWidth: true
                     placeholderText: i18n("Documents")
+                    onAccepted: pLocal.forceActiveFocus()
                 }
                 QQC2.TextField {
                     id: pLocal
                     Kirigami.FormData.label: i18n("Local folder:")
-                    Layout.fillWidth: true
                     placeholderText: "/home/…/Documents"
+                    onAccepted: pRemote.forceActiveFocus()
                 }
                 QQC2.TextField {
                     id: pRemote
                     Kirigami.FormData.label: i18n("Other folder:")
-                    Layout.fillWidth: true
                     placeholderText: "/mnt/nas/…/Documents"
+                    onAccepted: if (addSheet.canAdd) addSheet.commit()
                 }
+            }
+
+            // Dire pourquoi le bouton est grisé vaut mieux qu'un bouton inerte
+            // sans explication.
+            Kirigami.InlineMessage {
+                Layout.fillWidth: true
+                visible: !addSheet.canAdd
+                type: Kirigami.MessageType.Information
+                text: i18n("Fill in all three fields. The name identifies the pair; it cannot be empty.")
             }
         }
 
-        // The confirm button belongs in the footer, not inside the form: in the
-        // form it inherited the label column and sat off to one side.
+        readonly property bool canAdd: pName.text.trim().length > 0
+                                    && pLocal.text.trim().length > 0
+                                    && pRemote.text.trim().length > 0
+
+        function commit() {
+            kcm.addPair(pName.text.trim(), pLocal.text.trim(), pRemote.text.trim())
+            pName.text = ""; pLocal.text = ""; pRemote.text = ""
+            addSheet.close()
+        }
+
         footer: RowLayout {
+            QQC2.Button {
+                text: i18n("Cancel")
+                icon.name: "dialog-cancel"
+                onClicked: addSheet.close()
+            }
             Item { Layout.fillWidth: true }
             QQC2.Button {
                 text: i18n("Add")
                 icon.name: "list-add"
-                // Adding a nameless pair writes a section called "Pair_" that
-                // nothing can address afterwards.
-                enabled: pName.text.trim().length > 0
-                      && pLocal.text.trim().length > 0
-                      && pRemote.text.trim().length > 0
-                onClicked: {
-                    kcm.addPair(pName.text.trim(), pLocal.text.trim(), pRemote.text.trim())
-                    pName.text = ""; pLocal.text = ""; pRemote.text = ""
-                    addSheet.close()
-                }
+                enabled: addSheet.canAdd
+                onClicked: addSheet.commit()
             }
         }
     }

@@ -2,6 +2,7 @@
 Description=Full two-way sweep (catches changes made on the NAS itself)
 
 [Service]
+Environment=UNISONLOCALHOSTNAME=latitude1
 Type=oneshot
 # The first run transfers ~249 GB and takes hours; the default oneshot
 # timeout would kill it partway.

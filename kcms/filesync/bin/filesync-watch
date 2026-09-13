@@ -1,12 +1,13 @@
 #!/bin/bash
-# Watch the local side of every enabled pair and sync once things go quiet.
+# Surveille le côté local de chaque paire activée et synchronise au calme.
 #
-# Debounce, not per-event: saving a file in most editors produces a burst of
-# events, and a large copy produces thousands. Syncing on each one would thrash
-# the NAS, so a sync runs only after N seconds with nothing new.
+# Anti-rebond plutôt qu'événement par événement : enregistrer un fichier produit
+# une rafale d'événements dans la plupart des éditeurs, et une grosse copie en
+# produit des milliers. Synchroniser à chaque fois martèlerait le NAS.
 #
-# inotify sees LOCAL changes only. CIFS reports no events for changes made on
-# the NAS by another machine, which is why a periodic sweep runs alongside this.
+# inotify ne voit QUE les changements locaux. CIFS ne remonte aucun événement
+# pour ce qu'une autre machine écrit sur le NAS : d'où le balayage périodique
+# qui tourne à côté.
 set -u
 CONF="$HOME/.config/filesync/filesync.conf"
 LOG="$HOME/.cache/filesync/filesync.log"
@@ -20,30 +21,69 @@ ini() {
     ' "$CONF"
 }
 
-DEBOUNCE=$(ini General debounce); DEBOUNCE=${DEBOUNCE:-5}
-DIRS=()
-for p in $(grep -o '^\[Pair_[A-Za-z0-9_]*\]' "$CONF" | tr -d '[]'); do
-    [ "$(ini "$p" enabled)" = "true" ] || continue
-    d=$(ini "$p" local)
-    [ -d "$d" ] && DIRS+=("$d")
-done
-[ "${#DIRS[@]}" -gt 0 ] || { say "no enabled pairs with an existing local directory"; exit 0; }
-say "watching ${DIRS[*]} (debounce ${DEBOUNCE}s)"
-
-pending=0
+# Boucle extérieure : reconstruit la liste des dossiers et relance inotifywait.
+# L'ancienne version calculait la liste une seule fois au démarrage, puis sortait
+# avec le code 0 si aucune paire n'était activée. Or l'unité systemd est en
+# Restart=on-failure : une sortie 0 est un succès, donc rien ne la relançait. Le
+# surveillant mourait définitivement et en silence dès que les paires étaient
+# désactivées, et n'était pas là quand on en rajoutait une ensuite.
 while :; do
-    if read -r -t "$DEBOUNCE" _line; then
-        pending=1                      # something changed; keep waiting for quiet
-    elif [ "$pending" -eq 1 ]; then
-        pending=0
-        say "quiet for ${DEBOUNCE}s - syncing"
-        "$HOME/.local/bin/filesync" sync
-        # Drain anything unison itself just caused, so writing to the local side
-        # does not immediately trigger another round.
-        while read -r -t 0.2 _drain; do :; done
-        say "sync finished"
+    DEBOUNCE=$(ini General debounce); DEBOUNCE=${DEBOUNCE:-5}
+    DIRS=(); SECS=()
+    for p in $(grep -o '^\[Pair_[A-Za-z0-9_]*\]' "$CONF" 2>/dev/null | tr -d '[]'); do
+        [ "$(ini "$p" enabled)" = "true" ] || continue
+        d=$(ini "$p" local)
+        [ -d "$d" ] || continue
+        DIRS+=("$d"); SECS+=("$p")
+    done
+
+    if [ "${#DIRS[@]}" -eq 0 ]; then
+        say "aucune paire activée dont le dossier local existe - nouvelle vérification dans 30 s"
+        sleep 30
+        continue
     fi
-done < <(inotifywait -m -r -q \
-           -e close_write -e create -e delete -e move \
-           --exclude '(\.part$|\.swp$|~$|/\.git/|4913$)' \
-           "${DIRS[@]}" 2>/dev/null)
+    say "surveille ${#DIRS[@]} dossier(s) (anti-rebond ${DEBOUNCE}s)"
+
+    # Le fichier de configuration est surveillé lui aussi : ajouter une paire
+    # depuis le panneau doit prendre effet sans redémarrer le service.
+    declare -A PENDING=()
+    reload=0
+
+    while IFS= read -r -t "$DEBOUNCE" changed || rc=$?; do
+        if [ -n "${changed:-}" ]; then
+            case "$changed" in
+                "$CONF"*|"$(dirname "$CONF")"*) reload=1; break ;;
+            esac
+            # Retrouver à quelle paire appartient le chemin touché. Sans cela on
+            # resynchronisait TOUTES les paires à chaque modification : toucher un
+            # fichier dans Documents relançait un parcours complet de Music, soit
+            # des dizaines de milliers de stat() sur CIFS pour rien.
+            for i in "${!DIRS[@]}"; do
+                case "$changed" in "${DIRS[$i]}"*) PENDING["${SECS[$i]}"]=1 ;; esac
+            done
+            changed=""
+            continue
+        fi
+        # délai écoulé sans nouvel événement
+        if [ "${#PENDING[@]}" -gt 0 ]; then
+            for sec in "${!PENDING[@]}"; do
+                say "calme depuis ${DEBOUNCE}s - synchronisation de ${sec#Pair_}"
+                "$HOME/.local/bin/filesync" sync "$sec"
+            done
+            PENDING=()
+            # Purger ce qu'unison vient lui-même d'écrire localement, sinon il
+            # déclencherait immédiatement un nouveau tour.
+            while IFS= read -r -t 0.2 _drain; do :; done
+            say "synchronisation terminée"
+        fi
+    done < <(inotifywait -m -r -q --format '%w%f' \
+               -e close_write -e create -e delete -e move \
+               --exclude '(\.part$|\.swp$|~$|/\.git/|4913$)' \
+               "${DIRS[@]}" "$(dirname "$CONF")" 2>/dev/null)
+
+    # On arrive ici si inotifywait s'est arrêté (dossier supprimé, limite de
+    # surveillances atteinte) ou si la configuration a changé. Dans les deux cas
+    # la bonne réponse est de reconstruire la liste et de repartir, pas de mourir.
+    [ "$reload" -eq 1 ] && say "configuration modifiée - rechargement" || say "surveillance interrompue - relance"
+    sleep 2
+done
