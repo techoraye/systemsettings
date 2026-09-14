@@ -12,20 +12,32 @@ conflictPolicy=newer
 notify=true
 ignorePatterns=
 
+# direction : twoway | push (local -> NAS) | pull (NAS -> local)
+# deletions : keep   (défaut) la destination ne perd jamais rien : on ajoute et
+#                    on met à jour, on ne retire pas. C'est le mode à choisir
+#                    quand le NAS sert d'archive.
+#             mirror la destination devient identique à la source, donc ce
+#                    qu'elle avait en propre disparaît.
+#
+# Un sens unique n'est PAS additif par défaut dans unison : sans « deletions »,
+# push efface du NAS tout ce qui n'est pas dans le dossier local.
 [Pair_Documents]
 local=/home/you/Documents
 remote=/mnt/nas/NAS/Backup/Documents
-direction=twoway
+direction=push
+deletions=keep
 enabled=true
 
 [Pair_Images]
 local=/home/you/Pictures
 remote=/mnt/nas/NAS/Backup/Images
-direction=twoway
+direction=push
+deletions=keep
 enabled=true
 
 [Pair_Music]
 local=/home/you/Music
 remote=/mnt/nas/NAS/Backup/Music
-direction=twoway
+direction=push
+deletions=keep
 enabled=true

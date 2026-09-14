@@ -6,6 +6,15 @@
 # nothing detects a genuine conflict. unison keeps a per-pair archive of the
 # last agreed state, which is what makes two-way sync safe.
 #
+# Deux réglages indépendants par paire :
+#
+#   direction = twoway | push (local -> NAS) | pull (NAS -> local)
+#   deletions = keep   (défaut) la destination ne perd jamais rien
+#               mirror          la destination devient identique à la source
+#
+# Le second existe parce qu'un sens unique n'est PAS additif par nature : voir
+# le commentaire au-dessus du case sur « force ».
+#
 #   filesync sync [--force] [Pair_Name]   run it
 #   filesync dry  [Pair_Name]             show what would happen, change nothing
 #   filesync status                       current configuration and last result
@@ -47,10 +56,14 @@ nas_ready() {
 }
 
 write_profile() {   # $1 = section, $2 = sync|dry -> echoes profile name
-    local sec="$1" mode="${2:-sync}" name="${1#Pair_}" l r pol dir prf
+    local sec="$1" mode="${2:-sync}" name="${1#Pair_}" l r pol dir del prf
     l=$(ini "$sec" local); r=$(ini "$sec" remote)
     pol=$(ini General conflictPolicy); pol=${pol:-newer}
     dir=$(ini "$sec" direction); dir=${dir:-twoway}
+    # Le défaut est le mode qui ne perd rien. Une configuration écrite avant
+    # l'existence de cette clé se lit donc comme « ne supprime pas », ce qui
+    # change le comportement de push/pull dans le sens le moins destructeur.
+    del=$(ini "$sec" deletions); del=${del:-keep}
     [ "$mode" = dry ] && name="${name}-preview"
     prf="$UNISONDIR/${name,,}.prf"
     {
@@ -79,11 +92,37 @@ write_profile() {   # $1 = section, $2 = sync|dry -> echoes profile name
         echo "fastcheck = true"
         echo "log = true"
         echo "logfile = $LOGDIR/${name,,}.log"
+        # « force = racine » résout TOUTE différence en faveur de cette racine,
+        # et « ce fichier n'existe que de l'autre côté » en est une : unison le
+        # supprime. Un push n'est donc pas additif, c'est un miroir. Envoyer un
+        # dossier local vide vers un NAS plein le vidait intégralement.
+        #
+        # « nodeletion = racine » interdit toute suppression DANS cette racine.
+        # Combiné à force, on obtient le mode réellement additif : la source
+        # impose son contenu, la destination ne perd jamais ce qu'elle a en
+        # propre. C'est le défaut.
         case "$dir" in
-            push) echo "force = $l" ;;   # local wins everywhere: NAS mirrors local
-            pull) echo "force = $r" ;;   # NAS wins everywhere: local mirrors NAS
-            *)    [ "$pol" = "newer" ] && echo "prefer = newer" ;;
+            push) echo "force = $l"
+                  [ "$del" = mirror ] || echo "nodeletion = $r" ;;
+            pull) echo "force = $r"
+                  [ "$del" = mirror ] || echo "nodeletion = $l" ;;
+            *)    [ "$pol" = "newer" ] && echo "prefer = newer"
+                  # En bidirectionnel, « keep » protège les deux côtés : une
+                  # suppression ici cesse de se propager là-bas.
+                  if [ "$del" != mirror ]; then
+                      echo "nodeletion = $l"
+                      echo "nodeletion = $r"
+                  fi
+                  # « le plus récent gagne » écrase l'autre version sans laisser
+                  # de trace. Garder la copie perdante coûte un fichier et rend
+                  # l'arbitrage réversible.
+                  echo "copyonconflict = true" ;;
         esac
+        # Filet d'unison : refuser de propager la disparition d'une réplique
+        # entière (montage tombé, dossier renommé). En batch il interrompt au
+        # lieu de demander, ce qui est exactement le comportement voulu. Le
+        # mode dry le désactive déjà sur sa ligne de commande.
+        [ "$mode" = dry ] || echo "confirmbigdel = true"
         echo "ignore = Name .Trash-*"
         echo "ignore = Name .stfolder"
         echo "ignore = Name .DS_Store"
@@ -105,17 +144,51 @@ write_profile() {   # $1 = section, $2 = sync|dry -> echoes profile name
     printf '%s' "${name,,}"
 }
 
+empty_dir() {   # « vide » / « plein » ; s'arrête au premier fichier trouvé
+    find "$1" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null | grep -q . \
+        && echo plein || echo vide
+}
+
+guard_roots() {  # $1 = section ; refuse les configurations qui détruiraient des données
+    local sec="$1" name="${1#Pair_}" l r dir del src dst
+    l=$(ini "$sec" local); r=$(ini "$sec" remote)
+    dir=$(ini "$sec" direction); dir=${dir:-twoway}
+    del=$(ini "$sec" deletions); del=${del:-keep}
+
+    # Une racine absente n'est pas une racine vide. unison, lui, ne fait pas la
+    # différence : il la recrée et propage « tout a disparu » vers l'autre côté.
+    # Un montage tombé ou un dossier renommé suffisait donc à vider la copie.
+    [ -d "$l" ] || { say "$name: dossier local absent ($l) - paire ignorée"; return 1; }
+    [ -d "$r" ] || { say "$name: dossier distant absent ($r) - paire ignorée"; return 1; }
+
+    # Le reste ne concerne que le miroir : « keep » ne supprime rien par
+    # construction, il n'y a rien à protéger.
+    [ "$del" = mirror ] || return 0
+    case "$dir" in
+        push) src="$l"; dst="$r" ;;
+        pull) src="$r"; dst="$l" ;;
+        *)    return 0 ;;
+    esac
+    if [ "$(empty_dir "$src")" = vide ] && [ "$(empty_dir "$dst")" = plein ]; then
+        say "$name: REFUS - miroir d'une source vide ($src) vers une destination pleine ($dst)"
+        return 1
+    fi
+    return 0
+}
+
 run_pair() {  # run_pair <section> <sync|dry>
     local sec="$1" mode="$2" prf name
     name="${sec#Pair_}"
     if [ "$mode" = sync ] && [ "$(ini "$sec" enabled)" != "true" ]; then
         say "$name: disabled, skipped"; return 0
     fi
+    guard_roots "$sec" || return 1
     if ! prf=$(write_profile "$sec" "$mode"); then
         say "$name: profil non généré, paire ignorée"; return 1
     fi
     if [ "$mode" = dry ]; then
-        echo "=== $name   $(ini "$sec" local)  <->  $(ini "$sec" remote)   [$(ini "$sec" direction)]"
+        local d; d=$(ini "$sec" deletions); d=${d:-keep}
+        echo "=== $name   $(ini "$sec" local)  <->  $(ini "$sec" remote)   [$(ini "$sec" direction), suppressions: $d]"
         # -batch=false on the command line as well as in the profile, and "q"
         # on stdin so the reconciliation list is printed and then abandoned.
         # The preview quits before writing an archive, so unison shows its
@@ -179,8 +252,9 @@ case "$CMD" in
       printf 'NAS mounted   : %s\n' "$(nas_ready && echo yes || echo NO)"
       echo
       for p in $(pairs); do
-          printf '%-12s %-34s <-> %-34s %-7s %s\n' "${p#Pair_}" "$(ini "$p" local)" "$(ini "$p" remote)" \
-                 "$(ini "$p" direction)" "$([ "$(ini "$p" enabled)" = true ] && echo on || echo off)"
+          d=$(ini "$p" deletions); d=${d:-keep}
+          printf '%-12s %-30s <-> %-30s %-7s %-7s %s\n' "${p#Pair_}" "$(ini "$p" local)" "$(ini "$p" remote)" \
+                 "$(ini "$p" direction)" "$d" "$([ "$(ini "$p" enabled)" = true ] && echo on || echo off)"
       done
       echo; echo "last log lines:"; tail -8 "$LOG" 2>/dev/null | sed 's/^/  /'
       ;;

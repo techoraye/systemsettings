@@ -195,6 +195,38 @@ KCM.SimpleKCM {
                             onEditingFinished: kcm.setPairValue(modelData.key, "remote", text)
                         }
                     }
+
+                    // Le sens de la synchronisation ne dit rien du sort des
+                    // fichiers que la destination possède en propre : « Local →
+                    // NAS » peut aussi bien les garder que les effacer. Les deux
+                    // questions sont indépendantes, elles ont donc deux réglages.
+                    RowLayout {
+                        Layout.fillWidth: true
+                        QQC2.Label {
+                            text: i18n("Deletions:")
+                            opacity: 0.7
+                        }
+                        QQC2.ComboBox {
+                            Layout.preferredWidth: Kirigami.Units.gridUnit * 16
+                            model: [ i18n("Never delete anything"),
+                                     i18n("Exact copy - deletes") ]
+                            currentIndex: modelData.deletions === "mirror" ? 1 : 0
+                            onActivated: kcm.setPairValue(modelData.key, "deletions",
+                                          currentIndex === 1 ? "mirror" : "keep")
+                        }
+                        Item { Layout.fillWidth: true }
+                    }
+
+                    Kirigami.InlineMessage {
+                        Layout.fillWidth: true
+                        visible: modelData.deletions === "mirror"
+                        type: Kirigami.MessageType.Warning
+                        text: modelData.direction === "push"
+                              ? i18n("Whatever is on the NAS but not in the local folder will be deleted from the NAS.")
+                              : modelData.direction === "pull"
+                              ? i18n("Whatever is in the local folder but not on the NAS will be deleted locally.")
+                              : i18n("A file deleted on one side is deleted on the other side too.")
+                    }
                 }
             }
         }

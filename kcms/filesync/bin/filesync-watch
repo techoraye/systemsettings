@@ -49,7 +49,23 @@ while :; do
     declare -A PENDING=()
     reload=0
 
-    while IFS= read -r -t "$DEBOUNCE" changed || rc=$?; do
+    # « read || rc=$? » ne peut PAS servir de condition de boucle : l'affectation
+    # réussit toujours, donc la fin de flux est avalée et la boucle continue.
+    # inotifywait mort, read échouait aussitôt, encore et encore : le surveillant
+    # occupait un cœur à plein régime sans jamais atteindre son code de relance,
+    # quelques lignes plus bas. Il faut distinguer les deux échecs — bash renvoie
+    # plus de 128 quand -t expire, 1 sur fin de flux — et ne traiter en « calme
+    # revenu » que le premier.
+    while :; do
+        changed=""
+        # Le statut doit être lu SANS « ! » devant read : la négation s'applique
+        # aussi à $?, qui vaudrait alors 0 sur un simple dépassement de délai.
+        IFS= read -r -t "$DEBOUNCE" changed
+        rc=$?
+        if [ "$rc" -gt 0 ] && [ "$rc" -le 128 ]; then
+            say "flux inotify fermé (code $rc)"
+            break
+        fi
         if [ -n "${changed:-}" ]; then
             case "$changed" in
                 "$CONF"*|"$(dirname "$CONF")"*) reload=1; break ;;

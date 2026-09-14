@@ -1,7 +1,8 @@
 # filesync
 
-Synchronisation bidirectionnelle entre des dossiers locaux et un NAS, pilotée
-depuis un module natif des réglages système KDE.
+Synchronisation de dossiers locaux vers un NAS — à double sens ou à sens
+unique, avec ou sans propagation des suppressions — pilotée depuis un module
+natif des réglages système KDE.
 
 ```
 Réglages système  →  File Sync
@@ -87,11 +88,41 @@ notify=true
 [Pair_Documents]
 local=/home/you/Documents
 remote=/mnt/nas/NAS/Backup/Documents
-direction=twoway
+direction=push          # twoway | push (local -> NAS) | pull (NAS -> local)
+deletions=keep          # keep | mirror
 enabled=true
 ```
 
 Une section `[Pair_*]` par paire de dossiers.
+
+## Sens et suppressions : deux réglages, pas un
+
+Ce sont deux questions indépendantes, et les confondre coûte des données.
+
+`direction` dit **d'où** part l'autorité. `deletions` dit ce qu'il advient de ce
+que la destination possède **en propre** :
+
+| | `deletions=keep` (défaut) | `deletions=mirror` |
+|---|---|---|
+| `push` | le NAS reçoit et garde tout | le NAS devient identique au dossier local |
+| `pull` | le local reçoit et garde tout | le local devient identique au NAS |
+| `twoway` | aucune suppression ne se propage | une suppression d'un côté se propage |
+
+Le piège est qu'un sens unique **n'est pas additif par nature**. Dans unison,
+`force = racine` résout *toute* différence en faveur de cette racine — et
+« ce fichier n'existe que de l'autre côté » en est une. Sans `deletions=keep`,
+un `push` efface donc du NAS tout ce qui n'est pas dans le dossier local. Vider
+le dossier local puis lancer une synchro vidait l'archive.
+
+`deletions=keep` ajoute `nodeletion = <destination>`, qui interdit toute
+suppression dans cette racine quoi qu'il arrive par ailleurs.
+
+Deux garde-fous complètent le dispositif :
+
+- une racine **absente** (montage tombé, dossier renommé) n'est pas une racine
+  vide : la paire est refusée au lieu d'être traitée comme « tout a disparu » ;
+- en mode miroir, une source **vide** face à une destination **pleine** est
+  refusée. C'est la signature d'un accident, jamais d'une intention.
 
 ## Détails qui ont coûté du temps
 

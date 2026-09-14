@@ -139,6 +139,12 @@ public:
             m[QStringLiteral("enabled")] = st.value(g + QStringLiteral("/enabled")).toString() == QLatin1String("true");
             const QString d = st.value(g + QStringLiteral("/direction")).toString();
             m[QStringLiteral("direction")] = d.isEmpty() ? QStringLiteral("twoway") : d;
+            // Absente d'une configuration écrite avant l'existence de la clé :
+            // on retombe sur « keep », le mode qui ne supprime rien. Un ancien
+            // fichier devient donc plus prudent, jamais moins.
+            const QString del = st.value(g + QStringLiteral("/deletions")).toString();
+            m[QStringLiteral("deletions")] = del == QLatin1String("mirror")
+                                           ? QStringLiteral("mirror") : QStringLiteral("keep");
             out << m;
         }
         return out;
@@ -163,6 +169,7 @@ public:
         st.setValue(g + QStringLiteral("/remote"), remote);
         st.setValue(g + QStringLiteral("/enabled"), QStringLiteral("false"));
         st.setValue(g + QStringLiteral("/direction"), QStringLiteral("twoway"));
+        st.setValue(g + QStringLiteral("/deletions"), QStringLiteral("keep"));
         st.sync();
         Q_EMIT settingsChanged();
     }
